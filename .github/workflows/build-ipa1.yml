@@ -1,0 +1,62 @@
+name: Build VReader IPA
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+jobs:
+  build-ipa:
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # 锁定 Xcode 16.x（本仓库需要 16；运行器默认可能选到 26.x 不兼容）
+      - name: Select Xcode 16
+        run: |
+          XCODE16="$(ls -d /Applications/Xcode_16*.app 2>/dev/null | sort -V | tail -1)"
+          if [ -n "$XCODE16" ]; then sudo xcode-select -s "$XCODE16"; fi
+          xcodebuild -version
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      # 用 perl 替换（macOS/Linux 通吃，GNU/BSD sed 不通用）
+      - name: Apply fixes (3.9.0->3.10.0, Swift 5 mode)
+        run: |
+          perl -pi -e 's/exactVersion: "3.9.0"/exactVersion: "3.10.0"/' project.yml
+          perl -pi -e 's/SWIFT_VERSION: "6.0"/SWIFT_VERSION: "5.0"/' project.yml
+          perl -pi -e 's/SWIFT_STRICT_CONCURRENCY: complete/SWIFT_STRICT_CONCURRENCY: minimal/' project.yml
+          grep -nE "exactVersion|SWIFT_VERSION|SWIFT_STRICT_CONCURRENCY" project.yml
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Build (unsigned, Release)
+        run: |
+          xcodebuild \
+            -project vreader.xcodeproj \
+            -scheme vreader \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            build
+
+      - name: Package IPA
+        run: |
+          set -euo pipefail
+          APP="$(find build/Build/Products/Release-iphoneos -maxdepth 1 -name '*.app' -type d | head -1)"
+          mkdir -p Payload
+          cp -R "$APP" Payload/
+          zip -qr vreader.ipa Payload
+          ls -lh vreader.ipa
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: vreader-ipa
+          path: vreader.ipa
